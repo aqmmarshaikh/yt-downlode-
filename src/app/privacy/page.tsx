@@ -47,7 +47,7 @@ export default function PrivacyPolicyPage() {
 
           <h2 className="text-xl font-semibold text-white mt-8 mb-4">5. Contact Information</h2>
           <p>
-            If you have questions regarding this policy, please reach out via email at: <span className="font-mono text-indigo-400">privacy@mediadl.net</span>.
+            If you have questions regarding this policy, please reach out via email at: <span className="font-mono text-indigo-400">[ammarshaikh6100@gmail.com]</span>.
           </p>
         </div>
       </div>
