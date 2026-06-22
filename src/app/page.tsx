@@ -133,7 +133,14 @@ export default function Home() {
 
       if (!response.ok) {
         const errorText = await response.text().catch(() => "Download failed");
-        throw new Error(errorText);
+        let displayError = errorText;
+        try {
+          const parsed = JSON.parse(errorText);
+          if (parsed && parsed.error) {
+            displayError = parsed.error;
+          }
+        } catch {}
+        throw new Error(displayError);
       }
 
       setProgressStatus("Downloading...");

@@ -126,54 +126,68 @@ export async function POST(req: Request) {
       );
     }
 
-    const args = [
-      "--dump-single-json",
+    let spawnResult: SpawnResult;
+    let parsedInfo: any = null;
+
+    // Attempt 1: Try with Android Client (best for bypass)
+    const androidArgs = [
+      "--extractor-args", "youtube:player_client=android",
       "--flat-playlist",
       "--no-warnings",
       "--no-check-certificates",
+      "--geo-bypass",
+      "--dump-single-json",
       url,
     ];
-    console.log(`[INFO API] Spawning yt-dlp with arguments:`, args);
+    console.log(`[INFO API] Attempt 1: Spawning yt-dlp with Android client.`);
+    spawnResult = await runSpawn("yt-dlp", androidArgs, 35000);
 
-    const spawnResult = await runSpawn("yt-dlp", args, 30000);
+    console.log(`[INFO API] Attempt 1 stdout size: ${spawnResult.stdout.length} chars, stderr: "${spawnResult.stderr.trim()}"`);
 
-    // Extensive log output
-    console.log(`[INFO API] stdout size: ${spawnResult.stdout.length} chars`);
-    if (spawnResult.stdout.length > 0) {
-      console.log(`[INFO API] stdout preview (first 500 chars):`, spawnResult.stdout.substring(0, 500));
-    }
-    console.log(`[INFO API] stderr content:`, spawnResult.stderr);
-
-    if (spawnResult.error) {
-      console.error(`[INFO API] Spawn process threw error:`, spawnResult.error.message);
-      const errCode = (spawnResult.error as any).code;
-      if (errCode === "ENOENT") {
-        return NextResponse.json(
-          { error: "yt-dlp is not installed on the server or not found in PATH." },
-          { status: 503, headers: corsHeaders }
-        );
+    if (!spawnResult.error && spawnResult.code === 0 && spawnResult.stdout.trim().length > 0) {
+      try {
+        parsedInfo = JSON.parse(spawnResult.stdout);
+      } catch (parseErr: any) {
+        console.warn(`[INFO API] Attempt 1 output JSON parse failed:`, parseErr.message);
       }
-      throw spawnResult.error;
     }
 
-    if (spawnResult.code !== 0) {
-      console.error(`[INFO API] yt-dlp process returned non-zero code ${spawnResult.code}`);
-      if (spawnResult.code === null && spawnResult.signal === "SIGKILL") {
-        return NextResponse.json(
-          { error: "Request timed out while analyzing the URL." },
-          { status: 504, headers: corsHeaders }
-        );
+    // Attempt 2: Try with Web Client fallback
+    if (!parsedInfo) {
+      console.warn(`[INFO API] Attempt 1 failed or returned invalid JSON. Falling back to Web client...`);
+      const webArgs = [
+        "--extractor-args", "youtube:player_client=web",
+        "--flat-playlist",
+        "--no-warnings",
+        "--no-check-certificates",
+        "--geo-bypass",
+        "--dump-single-json",
+        url,
+      ];
+      console.log(`[INFO API] Attempt 2: Spawning yt-dlp with Web client.`);
+      spawnResult = await runSpawn("yt-dlp", webArgs, 35000);
+
+      console.log(`[INFO API] Attempt 2 stdout size: ${spawnResult.stdout.length} chars, stderr: "${spawnResult.stderr.trim()}"`);
+
+      if (spawnResult.error) {
+        console.error(`[INFO API] Fallback spawn error:`, spawnResult.error.message);
+        throw spawnResult.error;
       }
-      throw new Error(`yt-dlp failed with exit code ${spawnResult.code}. Stderr: ${spawnResult.stderr}`);
+
+      if (spawnResult.code !== 0) {
+        console.error(`[INFO API] Fallback exited with non-zero code ${spawnResult.code}`);
+        throw new Error(`yt-dlp failed to extract metadata. Stderr: ${spawnResult.stderr}`);
+      }
+
+      try {
+        parsedInfo = JSON.parse(spawnResult.stdout);
+      } catch (parseErr: any) {
+        console.error(`[INFO API] Fallback output JSON parse failed:`, parseErr.message);
+        throw new Error(`Failed to parse metadata from yt-dlp. Stderr: ${spawnResult.stderr}`);
+      }
     }
 
-    let info: any;
-    try {
-      info = JSON.parse(spawnResult.stdout);
-    } catch (parseErr: any) {
-      console.error(`[INFO API] Failed to parse JSON stdout. Error:`, parseErr.message);
-      throw new Error(`Failed to parse JSON output from yt-dlp: ${parseErr.message}. Raw: ${spawnResult.stdout.substring(0, 200)}`);
-    }
+    const info = parsedInfo;
 
     // Single video handling
     const title = info.title || "Unknown Title";

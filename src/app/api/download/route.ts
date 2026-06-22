@@ -1,13 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { execFile } from "child_process";
-import { promisify } from "util";
+import { spawn } from "child_process";
 import { createReadStream, unlinkSync, statSync, readdirSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { randomBytes } from "crypto";
 import { resolveBinaries } from "@/utils/bin-resolver";
-
-const execFileAsync = promisify(execFile);
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -28,7 +25,6 @@ function withCors(response: NextResponse) {
   });
   return response;
 }
-
 
 /**
  * Finds a temporary file matching the given prefix.
@@ -56,18 +52,89 @@ function cleanupFile(path: string | null) {
   }
 }
 
+interface SpawnResult {
+  stdout: string;
+  stderr: string;
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  error?: Error;
+}
+
+/**
+ * Helper to run a process using child_process.spawn.
+ */
+function runSpawn(command: string, args: string[], timeoutMs: number = 5 * 60 * 1000): Promise<SpawnResult> {
+  return new Promise((resolve) => {
+    console.log(`[SPAWN DOWNLOAD] Executing command: "${command} ${args.join(" ")}"`);
+    
+    let stdout = "";
+    let stderr = "";
+    let resolved = false;
+
+    const child = spawn(command, args);
+
+    const timer = setTimeout(() => {
+      if (!resolved) {
+        resolved = true;
+        console.error(`[SPAWN DOWNLOAD TIMEOUT] Download timed out after ${timeoutMs}ms. Terminating...`);
+        try {
+          child.kill("SIGKILL");
+        } catch (killErr) {
+          console.error(`[SPAWN DOWNLOAD TIMEOUT] Failed to kill process:`, killErr);
+        }
+        resolve({
+          stdout,
+          stderr,
+          code: null,
+          signal: "SIGKILL",
+          error: new Error(`Download timed out after ${timeoutMs}ms`)
+        });
+      }
+    }, timeoutMs);
+
+    child.stdout.on("data", (data) => {
+      stdout += data.toString();
+    });
+
+    child.stderr.on("data", (data) => {
+      stderr += data.toString();
+    });
+
+    child.on("error", (error) => {
+      if (!resolved) {
+        resolved = true;
+        clearTimeout(timer);
+        console.error(`[SPAWN DOWNLOAD ERROR] Process error:`, error);
+        resolve({ stdout, stderr, code: null, signal: null, error });
+      }
+    });
+
+    child.on("close", (code, signal) => {
+      if (!resolved) {
+        resolved = true;
+        clearTimeout(timer);
+        console.log(`[SPAWN DOWNLOAD CLOSE] Process finished with exit code ${code}, signal ${signal}`);
+        resolve({ stdout, stderr, code, signal });
+      }
+    });
+  });
+}
+
 /**
  * GET /api/download
  * Streams the downloaded file back to the client.
  * Query params: url, itag, type
  */
 export async function GET(req: NextRequest) {
+  console.log(`[DOWNLOAD API] Incoming GET request received.`);
   resolveBinaries();
+
   const searchParams = req.nextUrl.searchParams;
   const url = searchParams.get("url");
   const type = searchParams.get("type") || "video";
   const itag = searchParams.get("itag");
   let filename = searchParams.get("filename");
+
   if (!filename) {
     const timestamp = Date.now();
     const ext = type === "audio" ? "mp3" : "mp4";
@@ -75,17 +142,20 @@ export async function GET(req: NextRequest) {
   }
 
   if (!url) {
-    return withCors(new NextResponse("Invalid URL", { status: 400 }));
+    console.warn(`[DOWNLOAD API] Missing URL parameter.`);
+    return withCors(NextResponse.json({ error: "Invalid URL: URL parameter is required." }, { status: 400 }));
   }
 
   // Validate URL
   try {
     const parsed = new URL(url);
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      return withCors(new NextResponse("Invalid URL scheme", { status: 400 }));
+      console.warn(`[DOWNLOAD API] Invalid URL scheme: "${parsed.protocol}"`);
+      return withCors(NextResponse.json({ error: "Invalid URL: HTTP or HTTPS protocol required." }, { status: 400 }));
     }
   } catch {
-    return withCors(new NextResponse("Malformed URL", { status: 400 }));
+    console.warn(`[DOWNLOAD API] Malformed URL: "${url}"`);
+    return withCors(NextResponse.json({ error: "Invalid URL format." }, { status: 400 }));
   }
 
   const safeFilename = filename.replace(/[^\w\s\.-]/g, "").trim() || `download.${type === "audio" ? "mp3" : "mp4"}`;
@@ -94,86 +164,119 @@ export async function GET(req: NextRequest) {
   const tempPrefix = `mdl-${tempId}`;
   const tempTemplate = join(tempDir, `${tempPrefix}.%(ext)s`);
 
-  try {
-    const args: string[] = [];
+  let tempPath: string | null = null;
 
-    if (type === "audio") {
-      if (itag && itag.startsWith("mp3-")) {
-        // Specific MP3 bitrate
-        const bitrate = itag.split("-")[1] + "K";
-        args.push(
-          "-x",
-          "--audio-format", "mp3",
-          "--audio-quality", bitrate,
-          "-N", "5",
-          "-o", tempTemplate,
-          "--no-warnings",
-          "--no-check-certificates",
-          url
-        );
-      } else if (itag === "m4a-high") {
-        // M4A High Quality (uses best native audio)
-        args.push(
-          "-f", "bestaudio[ext=m4a]/bestaudio",
-          "-x",
-          "--audio-format", "m4a",
-          "-N", "5",
-          "-o", tempTemplate,
-          "--no-warnings",
-          "--no-check-certificates",
-          url
-        );
+  try {
+    const buildArgs = (clientType: "android" | "web") => {
+      const args: string[] = [
+        "--extractor-args", `youtube:player_client=${clientType}`,
+        "--geo-bypass",
+        "--no-warnings",
+        "--no-check-certificates"
+      ];
+
+      if (type === "audio") {
+        if (itag && itag.startsWith("mp3-")) {
+          // Specific MP3 bitrate
+          const bitrate = itag.split("-")[1] + "K";
+          args.push(
+            "-x",
+            "--audio-format", "mp3",
+            "--audio-quality", bitrate,
+            "-N", "5",
+            "-o", tempTemplate,
+            url
+          );
+        } else if (itag === "m4a-high") {
+          // M4A High Quality (uses best native audio)
+          args.push(
+            "-f", "bestaudio[ext=m4a]/bestaudio",
+            "-x",
+            "--audio-format", "m4a",
+            "-N", "5",
+            "-o", tempTemplate,
+            url
+          );
+        } else {
+          // Fallback best audio
+          args.push(
+            "-x",
+            "--audio-format", "mp3",
+            "--audio-quality", "128K",
+            "-N", "5",
+            "-o", tempTemplate,
+            url
+          );
+        }
       } else {
-        // Fallback best audio
+        // Video: parse resolution and container
+        const parts = itag ? itag.split("-") : ["mp4", "720"];
+        const container = parts[0] || "mp4";
+        const height = parts[1] || "720";
+        
+        const formatStr = `bestvideo[height<=${height}]+bestaudio/best[height<=${height}]/best`;
+        
         args.push(
-          "-x",
-          "--audio-format", "mp3",
-          "--audio-quality", "128K",
+          "-f", formatStr,
+          "--merge-output-format", container,
           "-N", "5",
           "-o", tempTemplate,
-          "--no-warnings",
-          "--no-check-certificates",
           url
         );
       }
-    } else {
-      // Video: parse resolution and container
-      const parts = itag ? itag.split("-") : ["mp4", "720"];
-      const container = parts[0] || "mp4";
-      const height = parts[1] || "720";
-      
-      const formatStr = `bestvideo[height<=${height}]+bestaudio/best[height<=${height}]/best`;
-      
-      args.push(
-        "-f", formatStr,
-        "--merge-output-format", container,
-        "-N", "5",
-        "-o", tempTemplate,
-        "--no-warnings",
-        "--no-check-certificates",
-        url
-      );
+      return args;
+    };
+
+    // Attempt 1: Try with Android player
+    let currentArgs = buildArgs("android");
+    console.log(`[DOWNLOAD API] Attempt 1: Spawning yt-dlp with Android client.`);
+    let spawnResult = await runSpawn("yt-dlp", currentArgs, 5 * 60 * 1000);
+
+    tempPath = findTempFile(tempDir, tempPrefix);
+
+    // Check if Attempt 1 failed
+    if (spawnResult.error || spawnResult.code !== 0 || !tempPath) {
+      console.warn(`[DOWNLOAD API] Attempt 1 failed (code: ${spawnResult.code}, error: ${spawnResult.error?.message}). Cleaning up and retrying with Web client...`);
+      cleanupFile(tempPath);
+      tempPath = null;
+
+      // Attempt 2: Try fallback with Web player
+      currentArgs = buildArgs("web");
+      console.log(`[DOWNLOAD API] Attempt 2: Spawning yt-dlp with Web client.`);
+      spawnResult = await runSpawn("yt-dlp", currentArgs, 5 * 60 * 1000);
+      tempPath = findTempFile(tempDir, tempPrefix);
     }
 
-    await execFileAsync("yt-dlp", args, {
-      timeout: 5 * 60 * 1000,
-      maxBuffer: 10 * 1024 * 1024,
-    });
+    if (spawnResult.error) {
+      cleanupFile(tempPath);
+      console.error(`[DOWNLOAD API] Final download failed with spawn error:`, spawnResult.error.message);
+      const errCode = (spawnResult.error as any).code;
+      if (errCode === "ENOENT") {
+        return withCors(NextResponse.json({ error: "yt-dlp is not installed on the server." }, { status: 503 }));
+      }
+      return withCors(NextResponse.json({ error: spawnResult.error.message }, { status: 500 }));
+    }
 
-    const tempPath = findTempFile(tempDir, tempPrefix);
+    if (spawnResult.code !== 0) {
+      cleanupFile(tempPath);
+      console.error(`[DOWNLOAD API] Final download failed with exit code: ${spawnResult.code}. Stderr: ${spawnResult.stderr}`);
+      if (spawnResult.code === null && spawnResult.signal === "SIGKILL") {
+        return withCors(NextResponse.json({ error: "Download request timed out." }, { status: 504 }));
+      }
+      return withCors(NextResponse.json({ error: `yt-dlp failed to download media. Stderr: ${spawnResult.stderr}` }, { status: 500 }));
+    }
+
     if (!tempPath) {
-      return withCors(new NextResponse("Download completed but file not found", {
-        status: 500,
-      }));
+      console.error(`[DOWNLOAD API] Final download exited 0 but temp file was not found.`);
+      return withCors(NextResponse.json({ error: "Download completed but the file was not found on the server." }, { status: 500 }));
     }
 
     let fileSize: number;
     try {
       fileSize = statSync(tempPath).size;
     } catch {
-      return withCors(new NextResponse("Download completed but file not found", {
-        status: 500,
-      }));
+      cleanupFile(tempPath);
+      return withCors(NextResponse.json({ error: "Failed to read downloaded file statistics." }, { status: 500 }));
     }
 
     const actualExt =
@@ -199,6 +302,7 @@ export async function GET(req: NextRequest) {
     }
 
     const nodeStream = createReadStream(tempPath);
+    const finalTempPath = tempPath; // Reference for closure
 
     const stream = new ReadableStream({
       start(controller) {
@@ -207,16 +311,16 @@ export async function GET(req: NextRequest) {
         });
         nodeStream.on("end", () => {
           controller.close();
-          cleanupFile(tempPath);
+          cleanupFile(finalTempPath);
         });
         nodeStream.on("error", (err) => {
           controller.error(err);
-          cleanupFile(tempPath);
+          cleanupFile(finalTempPath);
         });
       },
       cancel() {
         nodeStream.destroy();
-        cleanupFile(tempPath);
+        cleanupFile(finalTempPath);
       },
     });
 
@@ -227,25 +331,16 @@ export async function GET(req: NextRequest) {
     );
     headers.set("Content-Type", contentType);
     headers.set("Content-Length", fileSize.toString());
-    headers.set("Access-Control-Allow-Origin", "*");
-    headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
-    headers.set("Access-Control-Allow-Headers", "Content-Type, Authorization");
+    
+    // Set CORS headers on the stream response as well
+    Object.entries(corsHeaders).forEach(([key, value]) => {
+      headers.set(key, value);
+    });
 
     return new NextResponse(stream, { headers });
-  } catch (error: unknown) {
-    // Cleanup on error
-    const tempPath = findTempFile(tempDir, tempPrefix);
+  } catch (error: any) {
     cleanupFile(tempPath);
-
-    const execErr = error as { code?: string; killed?: boolean };
-    if (execErr.code === "ENOENT") {
-      return withCors(new NextResponse("yt-dlp is not installed on the server", {
-        status: 503,
-      }));
-    }
-    if (execErr.killed) {
-      return withCors(new NextResponse("Download timed out", { status: 504 }));
-    }
-    return withCors(new NextResponse("Failed to download", { status: 500 }));
+    console.error(`[DOWNLOAD API] Uncaught exception during download:`, error.message, error.stack);
+    return withCors(NextResponse.json({ error: error.message || String(error) }, { status: 500 }));
   }
 }
