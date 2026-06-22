@@ -1,0 +1,10 @@
+/* TEAM */
+Chef / Developer: MediaDL Team
+Contact: contact@mediadl.net
+From: Worldwide
+
+/* SITE */
+Last update: 2026/06/22
+Standards: HTML5, CSS3
+Components: Next.js 15, Tailwind CSS v4, TypeScript 5
+Software: React 19, yt-dlp, FFmpeg
