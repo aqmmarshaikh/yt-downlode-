@@ -5,6 +5,20 @@ import { resolveBinaries } from "@/utils/bin-resolver";
 
 const execFileAsync = promisify(execFile);
 
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+};
+
+export async function OPTIONS() {
+  return new Response(null, {
+    status: 204,
+    headers: corsHeaders,
+  });
+}
+
+
 /**
  * Validates that a URL is a well-formed HTTP(S) URL.
  * Does NOT restrict to YouTube — supports any yt-dlp compatible site.
@@ -31,14 +45,14 @@ export async function POST(req: Request) {
     if (!url || typeof url !== "string") {
       return NextResponse.json(
         { error: "A valid URL is required." },
-        { status: 400 }
+        { status: 400, headers: corsHeaders }
       );
     }
 
     if (!isValidMediaUrl(url)) {
       return NextResponse.json(
         { error: "Invalid URL format. Please provide an HTTP or HTTPS URL." },
-        { status: 400 }
+        { status: 400, headers: corsHeaders }
       );
     }
 
@@ -64,18 +78,18 @@ export async function POST(req: Request) {
       if (execErr.code === "ENOENT") {
         return NextResponse.json(
           { error: "yt-dlp is not installed on the server." },
-          { status: 503 }
+          { status: 503, headers: corsHeaders }
         );
       }
       if (execErr.killed || execErr.code === "ETIMEDOUT") {
         return NextResponse.json(
           { error: "Request timed out while analyzing the URL." },
-          { status: 504 }
+          { status: 504, headers: corsHeaders }
         );
       }
       return NextResponse.json(
         { error: "Failed to extract information from this URL." },
-        { status: 500 }
+        { status: 500, headers: corsHeaders }
       );
     }
 
@@ -261,11 +275,11 @@ export async function POST(req: Request) {
       viewCount,
       formats,
       platform,
-    });
+    }, { headers: corsHeaders });
   } catch {
     return NextResponse.json(
       { error: "Internal server error" },
-      { status: 500 }
+      { status: 500, headers: corsHeaders }
     );
   }
 }

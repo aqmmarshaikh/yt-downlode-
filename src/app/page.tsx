@@ -11,7 +11,16 @@ import { ErrorCard } from "@/components/sections/error-card";
 import { EmptyState } from "@/components/sections/empty-state";
 import type { MediaInfo, AppState, AppError, ProgressStatus } from "@/types";
 
+const getApiUrl = () => {
+  const envUrl = process.env.NEXT_PUBLIC_API_URL;
+  if (envUrl) {
+    return envUrl.endsWith("/") ? envUrl.slice(0, -1) : envUrl;
+  }
+  return "";
+};
+
 export default function Home() {
+
   // --- Application State (purely in-memory, session-scoped) ---
   const [appState, setAppState] = useState<AppState>("idle");
   const [mediaInfo, setMediaInfo] = useState<MediaInfo | null>(null);
@@ -31,7 +40,8 @@ export default function Home() {
     setProgressStatus("Fetching metadata...");
 
     try {
-      const res = await fetch("/api/info", {
+      const apiBase = getApiUrl();
+      const res = await fetch(`${apiBase}/api/info`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ url }),
@@ -114,7 +124,8 @@ export default function Home() {
         selectedFormat.filename ||
         `video_${Date.now()}.${selectedFormat.extension || "mp4"}`;
 
-      const downloadUrl = `/api/download?url=${encodeURIComponent(
+      const apiBase = getApiUrl();
+      const downloadUrl = `${apiBase}/api/download?url=${encodeURIComponent(
         mediaInfo.url
       )}&itag=${encodeURIComponent(selectedItag)}&type=${selectedFormat.type}&filename=${encodeURIComponent(urlFilename)}`;
 

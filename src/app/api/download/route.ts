@@ -9,6 +9,27 @@ import { resolveBinaries } from "@/utils/bin-resolver";
 
 const execFileAsync = promisify(execFile);
 
+const corsHeaders = {
+  "Access-Control-Allow-Origin": "*",
+  "Access-Control-Allow-Methods": "GET, POST, OPTIONS",
+  "Access-Control-Allow-Headers": "Content-Type, Authorization",
+};
+
+export async function OPTIONS() {
+  return new Response(null, {
+    status: 204,
+    headers: corsHeaders,
+  });
+}
+
+function withCors(response: NextResponse) {
+  Object.entries(corsHeaders).forEach(([key, value]) => {
+    response.headers.set(key, value);
+  });
+  return response;
+}
+
+
 /**
  * Finds a temporary file matching the given prefix.
  * yt-dlp determines the final extension, so we search by prefix.
@@ -54,17 +75,17 @@ export async function GET(req: NextRequest) {
   }
 
   if (!url) {
-    return new NextResponse("Invalid URL", { status: 400 });
+    return withCors(new NextResponse("Invalid URL", { status: 400 }));
   }
 
   // Validate URL
   try {
     const parsed = new URL(url);
     if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-      return new NextResponse("Invalid URL scheme", { status: 400 });
+      return withCors(new NextResponse("Invalid URL scheme", { status: 400 }));
     }
   } catch {
-    return new NextResponse("Malformed URL", { status: 400 });
+    return withCors(new NextResponse("Malformed URL", { status: 400 }));
   }
 
   const safeFilename = filename.replace(/[^\w\s\.-]/g, "").trim() || `download.${type === "audio" ? "mp3" : "mp4"}`;
@@ -141,18 +162,18 @@ export async function GET(req: NextRequest) {
 
     const tempPath = findTempFile(tempDir, tempPrefix);
     if (!tempPath) {
-      return new NextResponse("Download completed but file not found", {
+      return withCors(new NextResponse("Download completed but file not found", {
         status: 500,
-      });
+      }));
     }
 
     let fileSize: number;
     try {
       fileSize = statSync(tempPath).size;
     } catch {
-      return new NextResponse("Download completed but file not found", {
+      return withCors(new NextResponse("Download completed but file not found", {
         status: 500,
-      });
+      }));
     }
 
     const actualExt =
@@ -206,6 +227,9 @@ export async function GET(req: NextRequest) {
     );
     headers.set("Content-Type", contentType);
     headers.set("Content-Length", fileSize.toString());
+    headers.set("Access-Control-Allow-Origin", "*");
+    headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
+    headers.set("Access-Control-Allow-Headers", "Content-Type, Authorization");
 
     return new NextResponse(stream, { headers });
   } catch (error: unknown) {
@@ -215,13 +239,13 @@ export async function GET(req: NextRequest) {
 
     const execErr = error as { code?: string; killed?: boolean };
     if (execErr.code === "ENOENT") {
-      return new NextResponse("yt-dlp is not installed on the server", {
+      return withCors(new NextResponse("yt-dlp is not installed on the server", {
         status: 503,
-      });
+      }));
     }
     if (execErr.killed) {
-      return new NextResponse("Download timed out", { status: 504 });
+      return withCors(new NextResponse("Download timed out", { status: 504 }));
     }
-    return new NextResponse("Failed to download", { status: 500 });
+    return withCors(new NextResponse("Failed to download", { status: 500 }));
   }
 }
