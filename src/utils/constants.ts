@@ -1,6 +1,6 @@
 /** Application-wide constants */
 
-export const APP_NAME = "MediaDL";
+export const APP_NAME = "AnyMedia";
 export const APP_VERSION = "1.0.0";
 export const APP_DESCRIPTION = "Fast, clean and simple downloader experience.";
 

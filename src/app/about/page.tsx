@@ -1,41 +1,51 @@
 import type { Metadata } from "next";
+import Link from "next/link";
+import { AboutFounder } from "@/components/AboutFounder";
+import { SocialLinks } from "@/components/SocialLinks";
 
 export const metadata: Metadata = {
-  title: "About Us — MediaDL",
-  description: "Learn more about MediaDL, the privacy-first media downloader. Fast, clean, and completely stateless.",
+  title: "About Us — AnyMedia",
+  description: "Meet Ammar Shaikh, the founder of AnyMedia. Learn about our mission to build fast, clean, and ad-free internet tools.",
 };
 
 export default function AboutPage() {
   return (
-    <div className="mx-auto max-w-4xl px-4 sm:px-6 lg:px-8 py-16">
+    <div className="mx-auto max-w-4xl px-4 sm:px-6 lg:px-8 py-16 space-y-8">
+      {/* About Section */}
       <div className="rounded-2xl border border-white/[0.08] bg-white/[0.02] backdrop-blur-xl p-8 md:p-12 shadow-2xl">
         <h1 className="text-3xl font-bold tracking-tight bg-gradient-to-r from-white via-neutral-200 to-neutral-500 bg-clip-text text-transparent sm:text-4xl mb-6">
-          About MediaDL
+          About AnyMedia
         </h1>
         
         <div className="prose prose-invert max-w-none text-muted-foreground space-y-6">
+          <p className="text-lg font-medium text-white">
+            Hi, I&apos;m Ammar Shaikh.
+          </p>
           <p className="text-lg">
-            Welcome to <strong className="text-white">MediaDL</strong>, a premium, modern, and privacy-focused media downloader designed to deliver a clean web experience free from trackers, cookies, and intrusive advertising.
+            I created <strong className="text-white">AnyMedia</strong> to provide a fast, clean, and simple media downloading experience without annoying ads or unnecessary distractions.
           </p>
 
           <h2 className="text-xl font-semibold text-white mt-8 mb-4">Our Mission</h2>
           <p>
-            The internet is full of downloading utilities that bombard visitors with malicious redirects, popups, and tracking script collections. Our goal was simple: to construct a completely secure, lightweight, and high-performance alternative that respects user privacy and system security.
+            To build useful and user-friendly internet tools that save people&apos;s time.
           </p>
 
           <h2 className="text-xl font-semibold text-white mt-8 mb-4">How It Works</h2>
-          <ul className="list-disc pl-5 space-y-2">
-            <li><strong>Zero Storage:</strong> We never log or store URLs you paste. All analytical parsing is performed in-memory during your browser session.</li>
-            <li><strong>Direct Streaming:</strong> Files are processed and streamed on the fly. We maintain no cache of your media.</li>
-            <li><strong>Fully Automated:</strong> Utilizing powerful server-side scrapers like <code className="text-indigo-400 bg-white/5 px-1.5 py-0.5 rounded">yt-dlp</code>, the application decodes high-quality audio and video formats directly.</li>
-          </ul>
-
-          <h2 className="text-xl font-semibold text-white mt-8 mb-4">Key Features</h2>
           <p>
-            MediaDL is designed to support direct links and social media reels, shorts, and standard videos from platforms like YouTube, Instagram, Facebook, TikTok, and Twitter/X. Every download is parsed with clean file names mapping back to original platform titles without generating random UUIDs.
+            AnyMedia is fully stateless. When you paste a link, the backend decodes standard streaming resources and presents you with options to download directly in video (MP4, WebM, MOV) or audio (MP3, M4A) formats. Your details are never saved, keeping your workflow completely secure.
+          </p>
+
+          <p className="text-sm mt-6">
+            Need to get in touch? Visit our <Link href="/contact" className="text-indigo-400 hover:underline">Contact Page</Link> or review our <Link href="/privacy" className="text-indigo-400 hover:underline">Privacy Policy</Link>.
           </p>
         </div>
       </div>
+
+      {/* Founder Section */}
+      <AboutFounder />
+
+      {/* Social Links Connect Section */}
+      <SocialLinks />
     </div>
   );
 }
