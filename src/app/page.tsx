@@ -1,65 +1,288 @@
-import Image from "next/image";
+"use client";
+
+import { useState, useCallback } from "react";
+import { AnimatePresence } from "framer-motion";
+import { Hero } from "@/components/sections/hero";
+import { UrlInput } from "@/components/sections/url-input";
+import { MetadataPreview } from "@/components/sections/metadata-preview";
+import { DownloadOptions } from "@/components/sections/download-options";
+import { ProgressSection } from "@/components/sections/progress-section";
+import { ErrorCard } from "@/components/sections/error-card";
+import { EmptyState } from "@/components/sections/empty-state";
+import type { MediaInfo, AppState, AppError, ProgressStatus } from "@/types";
 
 export default function Home() {
+  // --- Application State (purely in-memory, session-scoped) ---
+  const [appState, setAppState] = useState<AppState>("idle");
+  const [mediaInfo, setMediaInfo] = useState<MediaInfo | null>(null);
+  const [selectedItag, setSelectedItag] = useState<string>("");
+  const [error, setError] = useState<AppError | null>(null);
+  const [progress, setProgress] = useState(0);
+  const [progressStatus, setProgressStatus] = useState<ProgressStatus>("Preparing...");
+  const [currentUrl, setCurrentUrl] = useState("");
+
+  /** Fetches metadata from the API */
+  const fetchMetadata = useCallback(async (url: string) => {
+    setAppState("loading");
+    setMediaInfo(null);
+    setError(null);
+    setProgress(0);
+    setCurrentUrl(url);
+    setProgressStatus("Fetching metadata...");
+
+    try {
+      const res = await fetch("/api/info", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ url }),
+      });
+
+      const data = await res.json();
+
+      if (!res.ok) {
+        const errorMap: Record<number, { title: string; code: string }> = {
+          400: { title: "Invalid URL", code: "INVALID_URL" },
+          503: { title: "Service Unavailable", code: "SERVICE" },
+          504: { title: "Request Timed Out", code: "TIMEOUT" },
+        };
+        const mapped = errorMap[res.status] || {
+          title: "Request Failed",
+          code: "UNKNOWN",
+        };
+        setError({
+          title: mapped.title,
+          message: data.error || "An unexpected error occurred.",
+          code: mapped.code,
+        });
+        setAppState("error");
+        return;
+      }
+
+      const info: MediaInfo = { ...data, url };
+      setMediaInfo(info);
+
+      // Selection rules:
+      // 1. If MP4 exists and is available, select it automatically.
+      // 2. Otherwise select WebM, or fallback to first available.
+      const availableMp4 = info.formats.find(f => f.container === "mp4" && f.isAvailable && f.isRecommended) || 
+                           info.formats.find(f => f.container === "mp4" && f.isAvailable);
+      
+      const availableWebm = info.formats.find(f => f.container === "webm" && f.isAvailable && f.isRecommended) ||
+                             info.formats.find(f => f.container === "webm" && f.isAvailable);
+
+      if (availableMp4) {
+        setSelectedItag(availableMp4.itag);
+      } else if (availableWebm) {
+        setSelectedItag(availableWebm.itag);
+      } else if (info.formats.length > 0) {
+        setSelectedItag(info.formats[0].itag);
+      }
+
+      setAppState("success");
+    } catch {
+      setError({
+        title: "Network Error",
+        message:
+          "Could not connect to the server. Please check your connection and try again.",
+        code: "NETWORK",
+      });
+      setAppState("error");
+    }
+  }, []);
+
+  /** Initiates the download */
+  const handleDownload = useCallback(async () => {
+    if (!mediaInfo || !selectedItag) return;
+
+    const selectedFormat = mediaInfo.formats.find(
+      (f) => f.itag === selectedItag
+    );
+    if (!selectedFormat) return;
+
+    setAppState("downloading");
+    setProgress(0);
+    setProgressStatus("Preparing media...");
+
+    // Print details before download
+    console.log("Selected Format:", selectedFormat);
+    console.log("Filename:", selectedFormat.filename);
+    console.log("Extension:", selectedFormat.extension);
+    console.log("MIME:", selectedFormat.mimeType);
+
+    try {
+      const urlFilename =
+        selectedFormat.filename ||
+        `video_${Date.now()}.${selectedFormat.extension || "mp4"}`;
+
+      const downloadUrl = `/api/download?url=${encodeURIComponent(
+        mediaInfo.url
+      )}&itag=${encodeURIComponent(selectedItag)}&type=${selectedFormat.type}&filename=${encodeURIComponent(urlFilename)}`;
+
+      const response = await fetch(downloadUrl);
+
+      if (!response.ok) {
+        const errorText = await response.text().catch(() => "Download failed");
+        throw new Error(errorText);
+      }
+
+      setProgressStatus("Downloading...");
+
+      const reader = response.body?.getReader();
+      const contentLength = +(response.headers.get("Content-Length") || 0);
+
+      if (!reader) throw new Error("Stream not available");
+
+      let receivedLength = 0;
+      const chunks: BlobPart[] = [];
+
+      for (;;) {
+        const { done, value } = await reader.read();
+        if (done) break;
+
+        chunks.push(value);
+        receivedLength += value.byteLength;
+
+        if (contentLength) {
+          setProgress((receivedLength / contentLength) * 100);
+        } else {
+          // Estimate progress when content length is unknown
+          setProgress((prev) => Math.min(prev + (100 - prev) * 0.03, 95));
+        }
+      }
+
+      setProgressStatus("Saving...");
+
+      const blob = new Blob(chunks, {
+        type: selectedFormat.mimeType || "video/mp4"
+      });
+
+      const blobUrl = URL.createObjectURL(blob);
+
+      const filename =
+        selectedFormat.filename ||
+        `video_${Date.now()}.${selectedFormat.extension || "mp4"}`;
+
+      const a = document.createElement("a");
+      a.href = blobUrl;
+      a.setAttribute("download", filename);
+      a.style.display = "none";
+
+      document.body.appendChild(a);
+
+      requestAnimationFrame(() => {
+        a.click();
+
+        // Verify after clicking
+        console.log({
+          download: a.download,
+          href: a.href,
+          filename,
+          mimeType: blob.type
+        });
+
+        setTimeout(() => {
+          document.body.removeChild(a);
+          URL.revokeObjectURL(blobUrl);
+        }, 10000);
+      });
+
+      setProgress(100);
+      setProgressStatus("Ready");
+      
+      // Return to success state after a brief delay
+      setTimeout(() => {
+        setAppState("success");
+      }, 1500);
+
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : "Download failed";
+      setError({
+        title: "Download Failed",
+        message,
+        code: "DOWNLOAD",
+      });
+      setAppState("error");
+    }
+  }, [mediaInfo, selectedItag]);
+
+  /** Clears everything and resets to idle */
+  const handleClear = useCallback(() => {
+    setAppState("idle");
+    setMediaInfo(null);
+    setSelectedItag("");
+    setError(null);
+    setProgress(0);
+    setCurrentUrl("");
+  }, []);
+
+  /** Retries the last request */
+  const handleRetry = useCallback(() => {
+    if (currentUrl) {
+      fetchMetadata(currentUrl);
+    } else {
+      handleClear();
+    }
+  }, [currentUrl, fetchMetadata, handleClear]);
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
+    <div className="flex flex-col flex-1">
+      {/* Hero Section */}
+      <Hero />
+
+      {/* Main Content */}
+      <div className="flex flex-col gap-8 pb-20 -mt-8">
+        {/* URL Input — always visible */}
+        <UrlInput
+          onSubmit={fetchMetadata}
+          isLoading={appState === "loading"}
+          onClear={handleClear}
         />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the page.tsx file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
-          </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <Image
-              className="dark:invert"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={16}
+
+        <AnimatePresence mode="wait">
+          {/* Loading State — Skeleton */}
+          {appState === "loading" && (
+            <MetadataPreview key="skeleton" info={null} isLoading={true} />
+          )}
+
+          {/* Error State */}
+          {appState === "error" && error && (
+            <ErrorCard key="error" error={error} onRetry={handleRetry} />
+          )}
+
+          {/* Success State — Show metadata + download options */}
+          {(appState === "success" || appState === "downloading") &&
+            mediaInfo && (
+              <div key="results" className="flex flex-col gap-8">
+                <MetadataPreview 
+                  info={mediaInfo} 
+                  isLoading={false} 
+                  selectedFormat={mediaInfo.formats.find(f => f.itag === selectedItag) || null}
+                />
+                <DownloadOptions
+                  formats={mediaInfo.formats}
+                  selectedItag={selectedItag}
+                  onSelectFormat={setSelectedItag}
+                  onDownload={handleDownload}
+                  isDownloading={appState === "downloading"}
+                />
+              </div>
+            )}
+
+          {/* Downloading Progress */}
+          {appState === "downloading" && (
+            <ProgressSection
+              key="progress"
+              progress={progress}
+              status={progressStatus}
+              isComplete={progress >= 100}
             />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
-        </div>
-      </main>
+          )}
+
+          {/* Idle State — Empty */}
+          {appState === "idle" && <EmptyState key="empty" />}
+        </AnimatePresence>
+      </div>
     </div>
   );
 }
