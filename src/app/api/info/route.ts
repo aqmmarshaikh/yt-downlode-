@@ -1,9 +1,6 @@
 import { NextResponse } from "next/server";
-import { execFile } from "child_process";
-import { promisify } from "util";
+import { spawn } from "child_process";
 import { resolveBinaries } from "@/utils/bin-resolver";
-
-const execFileAsync = promisify(execFile);
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -18,7 +15,6 @@ export async function OPTIONS() {
   });
 }
 
-
 /**
  * Validates that a URL is a well-formed HTTP(S) URL.
  * Does NOT restrict to YouTube — supports any yt-dlp compatible site.
@@ -32,17 +28,90 @@ function isValidMediaUrl(url: string): boolean {
   }
 }
 
+interface SpawnResult {
+  stdout: string;
+  stderr: string;
+  code: number | null;
+  signal: NodeJS.Signals | null;
+  error?: Error;
+}
+
+/**
+ * Helper to run a process using child_process.spawn.
+ * Collects stdout and stderr, enforces a timeout, and handles spawn/exec errors.
+ */
+function runSpawn(command: string, args: string[], timeoutMs: number = 30000): Promise<SpawnResult> {
+  return new Promise((resolve) => {
+    console.log(`[SPAWN LOG] Executing command: "${command} ${args.join(" ")}"`);
+    
+    let stdout = "";
+    let stderr = "";
+    let resolved = false;
+
+    const child = spawn(command, args);
+
+    const timer = setTimeout(() => {
+      if (!resolved) {
+        resolved = true;
+        console.error(`[SPAWN TIMEOUT] Process timed out after ${timeoutMs}ms. Terminating process...`);
+        try {
+          child.kill("SIGKILL");
+        } catch (killErr) {
+          console.error(`[SPAWN TIMEOUT] Failed to kill process:`, killErr);
+        }
+        resolve({
+          stdout,
+          stderr,
+          code: null,
+          signal: "SIGKILL",
+          error: new Error(`Process timed out after ${timeoutMs}ms`)
+        });
+      }
+    }, timeoutMs);
+
+    child.stdout.on("data", (data) => {
+      stdout += data.toString();
+    });
+
+    child.stderr.on("data", (data) => {
+      stderr += data.toString();
+    });
+
+    child.on("error", (error) => {
+      if (!resolved) {
+        resolved = true;
+        clearTimeout(timer);
+        console.error(`[SPAWN ERROR] Process event error for "${command}":`, error);
+        resolve({ stdout, stderr, code: null, signal: null, error });
+      }
+    });
+
+    child.on("close", (code, signal) => {
+      if (!resolved) {
+        resolved = true;
+        clearTimeout(timer);
+        console.log(`[SPAWN CLOSE] Process finished with exit code ${code}, signal ${signal}`);
+        resolve({ stdout, stderr, code, signal });
+      }
+    });
+  });
+}
+
 /**
  * POST /api/info
  * Accepts { url: string } and returns media metadata via yt-dlp.
  */
 export async function POST(req: Request) {
+  console.log(`[INFO API] Incoming POST request received.`);
   resolveBinaries();
+
   try {
     const body = await req.json().catch(() => null);
     const url = body?.url;
+    console.log(`[INFO API] Parsed body url: "${url}"`);
 
     if (!url || typeof url !== "string") {
+      console.warn(`[INFO API] Validation failed: A valid URL is required.`);
       return NextResponse.json(
         { error: "A valid URL is required." },
         { status: 400, headers: corsHeaders }
@@ -50,50 +119,61 @@ export async function POST(req: Request) {
     }
 
     if (!isValidMediaUrl(url)) {
+      console.warn(`[INFO API] Validation failed: Invalid URL format "${url}".`);
       return NextResponse.json(
         { error: "Invalid URL format. Please provide an HTTP or HTTPS URL." },
         { status: 400, headers: corsHeaders }
       );
     }
 
-    let stdout: string;
-    try {
-      const result = await execFileAsync(
-        "yt-dlp",
-        [
-          "--dump-single-json",
-          "--flat-playlist",
-          "--no-warnings",
-          "--no-check-certificates",
-          url,
-        ],
-        {
-          maxBuffer: 20 * 1024 * 1024,
-          timeout: 30000,
-        }
-      );
-      stdout = result.stdout;
-    } catch (err: unknown) {
-      const execErr = err as { code?: string; killed?: boolean };
-      if (execErr.code === "ENOENT") {
+    const args = [
+      "--dump-single-json",
+      "--flat-playlist",
+      "--no-warnings",
+      "--no-check-certificates",
+      url,
+    ];
+    console.log(`[INFO API] Spawning yt-dlp with arguments:`, args);
+
+    const spawnResult = await runSpawn("yt-dlp", args, 30000);
+
+    // Extensive log output
+    console.log(`[INFO API] stdout size: ${spawnResult.stdout.length} chars`);
+    if (spawnResult.stdout.length > 0) {
+      console.log(`[INFO API] stdout preview (first 500 chars):`, spawnResult.stdout.substring(0, 500));
+    }
+    console.log(`[INFO API] stderr content:`, spawnResult.stderr);
+
+    if (spawnResult.error) {
+      console.error(`[INFO API] Spawn process threw error:`, spawnResult.error.message);
+      const errCode = (spawnResult.error as any).code;
+      if (errCode === "ENOENT") {
         return NextResponse.json(
-          { error: "yt-dlp is not installed on the server." },
+          { error: "yt-dlp is not installed on the server or not found in PATH." },
           { status: 503, headers: corsHeaders }
         );
       }
-      if (execErr.killed || execErr.code === "ETIMEDOUT") {
+      throw spawnResult.error;
+    }
+
+    if (spawnResult.code !== 0) {
+      console.error(`[INFO API] yt-dlp process returned non-zero code ${spawnResult.code}`);
+      if (spawnResult.code === null && spawnResult.signal === "SIGKILL") {
         return NextResponse.json(
           { error: "Request timed out while analyzing the URL." },
           { status: 504, headers: corsHeaders }
         );
       }
-      return NextResponse.json(
-        { error: "Failed to extract information from this URL." },
-        { status: 500, headers: corsHeaders }
-      );
+      throw new Error(`yt-dlp failed with exit code ${spawnResult.code}. Stderr: ${spawnResult.stderr}`);
     }
 
-    const info = JSON.parse(stdout);
+    let info: any;
+    try {
+      info = JSON.parse(spawnResult.stdout);
+    } catch (parseErr: any) {
+      console.error(`[INFO API] Failed to parse JSON stdout. Error:`, parseErr.message);
+      throw new Error(`Failed to parse JSON output from yt-dlp: ${parseErr.message}. Raw: ${spawnResult.stdout.substring(0, 200)}`);
+    }
 
     // Single video handling
     const title = info.title || "Unknown Title";
@@ -276,10 +356,19 @@ export async function POST(req: Request) {
       formats,
       platform,
     }, { headers: corsHeaders });
-  } catch {
+
+  } catch (error: any) {
+    console.error(`[INFO API] HTTP 500 Uncaught Exception:`, error.message, error.stack);
     return NextResponse.json(
-      { error: "Internal server error" },
-      { status: 500, headers: corsHeaders }
+      {
+        success: false,
+        error: error.message || String(error),
+        stack: error.stack
+      },
+      {
+        status: 500,
+        headers: corsHeaders
+      }
     );
   }
 }
