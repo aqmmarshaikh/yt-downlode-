@@ -1,6 +1,23 @@
 import { NextResponse } from "next/server";
 import { spawn } from "child_process";
 import { resolveBinaries } from "@/utils/bin-resolver";
+import { writeFileSync } from "fs";
+import { join } from "path";
+import { tmpdir } from "os";
+
+const getCookiesPath = (): string | null => {
+  const cookieContent = process.env.YOUTUBE_COOKIES;
+  if (!cookieContent) return null;
+  
+  try {
+    const cookiesPath = join(tmpdir(), "yt-cookies.txt");
+    writeFileSync(cookiesPath, cookieContent, "utf8");
+    return cookiesPath;
+  } catch (err) {
+    console.error("Failed to write temporary cookies file:", err);
+    return null;
+  }
+};
 
 const corsHeaders = {
   "Access-Control-Allow-Origin": "*",
@@ -131,7 +148,7 @@ export async function POST(req: Request) {
 
     // Helper to build arguments with -f all so it doesn't fail on skipped formats
     const buildInfoArgs = (clientType: string) => {
-      return [
+      const args = [
         "--extractor-args", `youtube:player_client=${clientType}`,
         "-f", "all",
         "--flat-playlist",
@@ -141,6 +158,12 @@ export async function POST(req: Request) {
         "--dump-single-json",
         url,
       ];
+
+      const cookiesPath = getCookiesPath();
+      if (cookiesPath) {
+        args.unshift("--cookies", cookiesPath);
+      }
+      return args;
     };
 
     const runAttempt = async (clientType: string) => {

@@ -1,9 +1,23 @@
 import { NextRequest, NextResponse } from "next/server";
 import { spawn } from "child_process";
-import { createReadStream, unlinkSync, statSync, readdirSync } from "fs";
+import { createReadStream, unlinkSync, statSync, readdirSync, writeFileSync } from "fs";
 import { tmpdir } from "os";
 import { join } from "path";
 import { randomBytes } from "crypto";
+
+const getCookiesPath = (): string | null => {
+  const cookieContent = process.env.YOUTUBE_COOKIES;
+  if (!cookieContent) return null;
+  
+  try {
+    const cookiesPath = join(tmpdir(), "yt-download-cookies.txt");
+    writeFileSync(cookiesPath, cookieContent, "utf8");
+    return cookiesPath;
+  } catch (err) {
+    console.error("Failed to write temporary cookies file:", err);
+    return null;
+  }
+};
 import { resolveBinaries } from "@/utils/bin-resolver";
 
 const corsHeaders = {
@@ -225,6 +239,11 @@ export async function GET(req: NextRequest) {
           "-o", tempTemplate,
           url
         );
+      }
+      
+      const cookiesPath = getCookiesPath();
+      if (cookiesPath) {
+        args.unshift("--cookies", cookiesPath);
       }
       return args;
     };
