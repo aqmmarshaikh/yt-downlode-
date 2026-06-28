@@ -180,6 +180,7 @@ export async function GET(req: NextRequest) {
           // Specific MP3 bitrate
           const bitrate = itag.split("-")[1] + "K";
           args.push(
+            "-f", "bestaudio/best",
             "-x",
             "--audio-format", "mp3",
             "--audio-quality", bitrate,
@@ -190,7 +191,7 @@ export async function GET(req: NextRequest) {
         } else if (itag === "m4a-high") {
           // M4A High Quality (uses best native audio)
           args.push(
-            "-f", "bestaudio[ext=m4a]/bestaudio",
+            "-f", "bestaudio[ext=m4a]/bestaudio/best",
             "-x",
             "--audio-format", "m4a",
             "-N", "5",
@@ -200,6 +201,7 @@ export async function GET(req: NextRequest) {
         } else {
           // Fallback best audio
           args.push(
+            "-f", "bestaudio/best",
             "-x",
             "--audio-format", "mp3",
             "--audio-quality", "128K",
