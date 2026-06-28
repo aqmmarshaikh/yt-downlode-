@@ -126,8 +126,8 @@ export async function POST(req: Request) {
       );
     }
 
-    let spawnResult: SpawnResult;
     let parsedInfo: any = null;
+    const attemptsLog: any[] = [];
 
     // Helper to build arguments with -f all so it doesn't fail on skipped formats
     const buildInfoArgs = (clientType: string) => {
@@ -143,91 +143,47 @@ export async function POST(req: Request) {
       ];
     };
 
-    // Attempt 1: Try with tv Client (best for bypassing server IP blocks as CAPTCHAs are not enforced on TV clients)
-    console.log(`[INFO API] Attempt 1: Spawning yt-dlp with tv client.`);
-    spawnResult = await runSpawn("yt-dlp", buildInfoArgs("tv"), 35000);
-
-    console.log(`[INFO API] Attempt 1 (tv) stdout size: ${spawnResult.stdout.length} chars, stderr: "${spawnResult.stderr.trim()}"`);
-
-    if (!spawnResult.error && spawnResult.code === 0 && spawnResult.stdout.trim().length > 0) {
-      try {
-        parsedInfo = JSON.parse(spawnResult.stdout);
-      } catch (parseErr: any) {
-        console.warn(`[INFO API] Attempt 1 (tv) output JSON parse failed:`, parseErr.message);
-      }
-    }
-
-    // Attempt 2: Try with mweb Client
-    if (!parsedInfo) {
-      console.warn(`[INFO API] Attempt 1 (tv) failed or returned invalid JSON. Falling back to mweb client...`);
-      spawnResult = await runSpawn("yt-dlp", buildInfoArgs("mweb"), 35000);
-
-      console.log(`[INFO API] Attempt 2 (mweb) stdout size: ${spawnResult.stdout.length} chars, stderr: "${spawnResult.stderr.trim()}"`);
+    const runAttempt = async (clientType: string) => {
+      console.log(`[INFO API] Spawning yt-dlp with ${clientType} client.`);
+      const spawnResult = await runSpawn("yt-dlp", buildInfoArgs(clientType), 35000);
+      
+      const logEntry = {
+        client: clientType,
+        code: spawnResult.code,
+        signal: spawnResult.signal,
+        error: spawnResult.error?.message || null,
+        stdoutLength: spawnResult.stdout.length,
+        stderr: spawnResult.stderr.trim(),
+      };
+      attemptsLog.push(logEntry);
+      console.log(`[INFO API] ${clientType} client completed. Code: ${spawnResult.code}, stdout: ${spawnResult.stdout.length} chars, stderr: "${spawnResult.stderr.trim()}"`);
 
       if (!spawnResult.error && spawnResult.code === 0 && spawnResult.stdout.trim().length > 0) {
         try {
-          parsedInfo = JSON.parse(spawnResult.stdout);
+          return JSON.parse(spawnResult.stdout);
         } catch (parseErr: any) {
-          console.warn(`[INFO API] Attempt 2 (mweb) output JSON parse failed:`, parseErr.message);
+          console.warn(`[INFO API] ${clientType} output JSON parse failed:`, parseErr.message);
         }
       }
-    }
+      return null;
+    };
 
-    // Attempt 3: Try with ios Client
+    parsedInfo = await runAttempt("tv");
+    if (!parsedInfo) parsedInfo = await runAttempt("mweb");
+    if (!parsedInfo) parsedInfo = await runAttempt("ios");
+    if (!parsedInfo) parsedInfo = await runAttempt("android");
+    if (!parsedInfo) parsedInfo = await runAttempt("web");
+
     if (!parsedInfo) {
-      console.warn(`[INFO API] Attempt 2 (mweb) failed or returned invalid JSON. Falling back to ios client...`);
-      spawnResult = await runSpawn("yt-dlp", buildInfoArgs("ios"), 35000);
-
-      console.log(`[INFO API] Attempt 3 (ios) stdout size: ${spawnResult.stdout.length} chars, stderr: "${spawnResult.stderr.trim()}"`);
-
-      if (!spawnResult.error && spawnResult.code === 0 && spawnResult.stdout.trim().length > 0) {
-        try {
-          parsedInfo = JSON.parse(spawnResult.stdout);
-        } catch (parseErr: any) {
-          console.warn(`[INFO API] Attempt 3 (ios) output JSON parse failed:`, parseErr.message);
-        }
-      }
-    }
-
-    // Attempt 4: Try with Android Client
-    if (!parsedInfo) {
-      console.warn(`[INFO API] Attempt 3 (ios) failed or returned invalid JSON. Falling back to Android client...`);
-      spawnResult = await runSpawn("yt-dlp", buildInfoArgs("android"), 35000);
-
-      console.log(`[INFO API] Attempt 4 (android) stdout size: ${spawnResult.stdout.length} chars, stderr: "${spawnResult.stderr.trim()}"`);
-
-      if (!spawnResult.error && spawnResult.code === 0 && spawnResult.stdout.trim().length > 0) {
-        try {
-          parsedInfo = JSON.parse(spawnResult.stdout);
-        } catch (parseErr: any) {
-          console.warn(`[INFO API] Attempt 4 (android) output JSON parse failed:`, parseErr.message);
-        }
-      }
-    }
-
-    // Attempt 5: Try with Web Client fallback
-    if (!parsedInfo) {
-      console.warn(`[INFO API] Attempt 4 (android) failed or returned invalid JSON. Falling back to Web client...`);
-      spawnResult = await runSpawn("yt-dlp", buildInfoArgs("web"), 35000);
-
-      console.log(`[INFO API] Attempt 5 (web) stdout size: ${spawnResult.stdout.length} chars, stderr: "${spawnResult.stderr.trim()}"`);
-
-      if (spawnResult.error) {
-        console.error(`[INFO API] Fallback spawn error:`, spawnResult.error.message);
-        throw spawnResult.error;
-      }
-
-      if (spawnResult.code !== 0) {
-        console.error(`[INFO API] Fallback exited with non-zero code ${spawnResult.code}`);
-        throw new Error(`yt-dlp failed to extract metadata. Stderr: ${spawnResult.stderr}`);
-      }
-
-      try {
-        parsedInfo = JSON.parse(spawnResult.stdout);
-      } catch (parseErr: any) {
-        console.error(`[INFO API] Fallback output JSON parse failed:`, parseErr.message);
-        throw new Error(`Failed to parse metadata from yt-dlp. Stderr: ${spawnResult.stderr}`);
-      }
+      console.error(`[INFO API] All 5 attempts failed.`);
+      return NextResponse.json(
+        {
+          success: false,
+          error: "yt-dlp failed to extract metadata after trying all player clients.",
+          attempts: attemptsLog
+        },
+        { status: 500, headers: corsHeaders }
+      );
     }
 
     const info = parsedInfo;
