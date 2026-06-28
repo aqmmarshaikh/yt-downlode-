@@ -129,9 +129,9 @@ export async function POST(req: Request) {
     let spawnResult: SpawnResult;
     let parsedInfo: any = null;
 
-    // Attempt 1: Try with Android Client (best for bypass)
-    const androidArgs = [
-      "--extractor-args", "youtube:player_client=android",
+    // Attempt 1: Try with mweb Client (excellent bypass success on datacenter IPs)
+    const mwebArgs = [
+      "--extractor-args", "youtube:player_client=mweb",
       "--flat-playlist",
       "--no-warnings",
       "--no-check-certificates",
@@ -139,22 +139,48 @@ export async function POST(req: Request) {
       "--dump-single-json",
       url,
     ];
-    console.log(`[INFO API] Attempt 1: Spawning yt-dlp with Android client.`);
-    spawnResult = await runSpawn("yt-dlp", androidArgs, 35000);
+    console.log(`[INFO API] Attempt 1: Spawning yt-dlp with mweb client.`);
+    spawnResult = await runSpawn("yt-dlp", mwebArgs, 35000);
 
-    console.log(`[INFO API] Attempt 1 stdout size: ${spawnResult.stdout.length} chars, stderr: "${spawnResult.stderr.trim()}"`);
+    console.log(`[INFO API] Attempt 1 (mweb) stdout size: ${spawnResult.stdout.length} chars, stderr: "${spawnResult.stderr.trim()}"`);
 
     if (!spawnResult.error && spawnResult.code === 0 && spawnResult.stdout.trim().length > 0) {
       try {
         parsedInfo = JSON.parse(spawnResult.stdout);
       } catch (parseErr: any) {
-        console.warn(`[INFO API] Attempt 1 output JSON parse failed:`, parseErr.message);
+        console.warn(`[INFO API] Attempt 1 (mweb) output JSON parse failed:`, parseErr.message);
       }
     }
 
-    // Attempt 2: Try with Web Client fallback
+    // Attempt 2: Try with Android Client
     if (!parsedInfo) {
-      console.warn(`[INFO API] Attempt 1 failed or returned invalid JSON. Falling back to Web client...`);
+      console.warn(`[INFO API] Attempt 1 (mweb) failed or returned invalid JSON. Falling back to Android client...`);
+      const androidArgs = [
+        "--extractor-args", "youtube:player_client=android",
+        "--flat-playlist",
+        "--no-warnings",
+        "--no-check-certificates",
+        "--geo-bypass",
+        "--dump-single-json",
+        url,
+      ];
+      console.log(`[INFO API] Attempt 2: Spawning yt-dlp with Android client.`);
+      spawnResult = await runSpawn("yt-dlp", androidArgs, 35000);
+
+      console.log(`[INFO API] Attempt 2 (android) stdout size: ${spawnResult.stdout.length} chars, stderr: "${spawnResult.stderr.trim()}"`);
+
+      if (!spawnResult.error && spawnResult.code === 0 && spawnResult.stdout.trim().length > 0) {
+        try {
+          parsedInfo = JSON.parse(spawnResult.stdout);
+        } catch (parseErr: any) {
+          console.warn(`[INFO API] Attempt 2 (android) output JSON parse failed:`, parseErr.message);
+        }
+      }
+    }
+
+    // Attempt 3: Try with Web Client fallback
+    if (!parsedInfo) {
+      console.warn(`[INFO API] Attempt 2 (android) failed or returned invalid JSON. Falling back to Web client...`);
       const webArgs = [
         "--extractor-args", "youtube:player_client=web",
         "--flat-playlist",
@@ -164,10 +190,10 @@ export async function POST(req: Request) {
         "--dump-single-json",
         url,
       ];
-      console.log(`[INFO API] Attempt 2: Spawning yt-dlp with Web client.`);
+      console.log(`[INFO API] Attempt 3: Spawning yt-dlp with Web client.`);
       spawnResult = await runSpawn("yt-dlp", webArgs, 35000);
 
-      console.log(`[INFO API] Attempt 2 stdout size: ${spawnResult.stdout.length} chars, stderr: "${spawnResult.stderr.trim()}"`);
+      console.log(`[INFO API] Attempt 3 (web) stdout size: ${spawnResult.stdout.length} chars, stderr: "${spawnResult.stderr.trim()}"`);
 
       if (spawnResult.error) {
         console.error(`[INFO API] Fallback spawn error:`, spawnResult.error.message);

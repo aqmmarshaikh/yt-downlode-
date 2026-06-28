@@ -167,7 +167,7 @@ export async function GET(req: NextRequest) {
   let tempPath: string | null = null;
 
   try {
-    const buildArgs = (clientType: "android" | "web") => {
+    const buildArgs = (clientType: "mweb" | "android" | "web") => {
       const args: string[] = [
         "--extractor-args", `youtube:player_client=${clientType}`,
         "--geo-bypass",
@@ -229,22 +229,35 @@ export async function GET(req: NextRequest) {
       return args;
     };
 
-    // Attempt 1: Try with Android player
-    let currentArgs = buildArgs("android");
-    console.log(`[DOWNLOAD API] Attempt 1: Spawning yt-dlp with Android client.`);
+    // Attempt 1: Try with mweb player
+    let currentArgs = buildArgs("mweb");
+    console.log(`[DOWNLOAD API] Attempt 1: Spawning yt-dlp with mweb client.`);
     let spawnResult = await runSpawn("yt-dlp", currentArgs, 5 * 60 * 1000);
 
     tempPath = findTempFile(tempDir, tempPrefix);
 
     // Check if Attempt 1 failed
     if (spawnResult.error || spawnResult.code !== 0 || !tempPath) {
-      console.warn(`[DOWNLOAD API] Attempt 1 failed (code: ${spawnResult.code}, error: ${spawnResult.error?.message}). Cleaning up and retrying with Web client...`);
+      console.warn(`[DOWNLOAD API] Attempt 1 (mweb) failed (code: ${spawnResult.code}, error: ${spawnResult.error?.message}). Cleaning up and retrying with Android client...`);
       cleanupFile(tempPath);
       tempPath = null;
 
-      // Attempt 2: Try fallback with Web player
+      // Attempt 2: Try with Android player
+      currentArgs = buildArgs("android");
+      console.log(`[DOWNLOAD API] Attempt 2: Spawning yt-dlp with Android client.`);
+      spawnResult = await runSpawn("yt-dlp", currentArgs, 5 * 60 * 1000);
+      tempPath = findTempFile(tempDir, tempPrefix);
+    }
+
+    // Check if Attempt 2 failed
+    if (spawnResult.error || spawnResult.code !== 0 || !tempPath) {
+      console.warn(`[DOWNLOAD API] Attempt 2 (android) failed (code: ${spawnResult.code}, error: ${spawnResult.error?.message}). Cleaning up and retrying with Web client...`);
+      cleanupFile(tempPath);
+      tempPath = null;
+
+      // Attempt 3: Try fallback with Web player
       currentArgs = buildArgs("web");
-      console.log(`[DOWNLOAD API] Attempt 2: Spawning yt-dlp with Web client.`);
+      console.log(`[DOWNLOAD API] Attempt 3: Spawning yt-dlp with Web client.`);
       spawnResult = await runSpawn("yt-dlp", currentArgs, 5 * 60 * 1000);
       tempPath = findTempFile(tempDir, tempPrefix);
     }
